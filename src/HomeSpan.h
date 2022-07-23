@@ -45,6 +45,7 @@
 #include "HAPConstants.h"
 #include "HapQR.h"
 #include "Characteristics.h"
+#include <esp_event.h>
 
 using std::vector;
 using std::unordered_map;
@@ -57,7 +58,25 @@ enum {
   GET_EV=16,
   GET_DESC=32,
   GET_NV=64,
-  GET_ALL=255
+  GET_ALL=255,
+     HOMESPAN_WIFI_NEEDED,
+    HOMESPAN_WIFI_CONNECTING,
+    HOMESPAN_WIFI_CONNECTED,
+    HOMESPAN_WIFI_DISCONNECTED,
+    HOMESPAN_AP_STARTED,
+    HOMESPAN_AP_CONNECTED,
+    HOMESPAN_OTA_STARTED,
+    HOMESPAN_PAIRING_NEEDED,
+    HOMESPAN_PAIRED,
+    HOMESPAN_READY,
+    HOMESPAN_ALERT,
+    HOMESPAN_EXIT_CMD_MODE,
+    HOMESPAN_ENTER_CMD_MODE,
+    HOMESPAN_CMD_SELECT_NONE,
+    HOMESPAN_CMD_SELECT_RESTART,
+    HOMESPAN_CMD_SELECT_AP_START,
+    HOMESPAN_CMD_SELECT_UNPAIR,
+    HOMESPAN_CMD_SELECT_WIFI_DELETE,
 };
 
 ///////////////////////////////
@@ -202,6 +221,9 @@ struct Span{
   unordered_map<uint64_t, uint32_t> TimedWrites;    // map of timed-write PIDs and Alarm Times (based on TTLs)
   
   unordered_map<char, SpanUserCommand *> UserCommands;           // map of pointers to all UserCommands
+ 
+   esp_event_loop_handle_t eventLoopHandle = NULL;
+  void (*eventCallback)(int e)=NULL;                // optional function to invoke when events occur
 
   void begin(Category catID=DEFAULT_CATEGORY,
              const char *displayName=DEFAULT_DISPLAY_NAME,
@@ -247,6 +269,9 @@ struct Span{
   void setApFunction(void (*f)()){apFunction=f;}                          // sets an optional user-defined function to call when activating the WiFi Access Point  
   void enableAutoStartAP(){autoStartAPEnabled=true;}                      // enables auto start-up of Access Point when WiFi Credentials not found
   void setWifiCredentials(const char *ssid, const char *pwd);             // sets WiFi Credentials
+ 
+  void addEventCallback(void (*f)(int e));                                // adds an event callback
+  void fireEventCallback(int e);                                          // fires an event
 
   void setPairingCode(const char *s){sprintf(pairingCodeCommand,"S %9s",s);}    // sets the Pairing Code - use is NOT recommended.  Use 'S' from CLI instead
   void deleteStoredValues(){processSerialCommand("V");}                         // deletes stored Characteristic values from NVS  
