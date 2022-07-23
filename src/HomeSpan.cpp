@@ -42,9 +42,18 @@ const __attribute__((section(".rodata_custom_desc"))) SpanPartition spanPartitio
 
 using namespace Utils;
 
+ESP_EVENT_DEFINE_BASE(HOMESPAN_EVENT_BASE);
+
 HAPClient **hap;                    // HAP Client structure containing HTTP client connections, parsing routines, and state variables (global-scoped variable)
 Span homeSpan;                      // HAP Attributes database and all related control functions for this Accessory (global-scoped variable)
 HapCharacteristics hapChars;        // Instantiation of all HAP Characteristics (used to create SpanCharacteristics)
+
+static void eventHandler(void* handler_args, esp_event_base_t base, int32_t event_id, void* event_data) {
+  Span *s = (Span *)handler_args;
+  if(s->eventCallback && base == HOMESPAN_EVENT_BASE) {
+    s->eventCallback(event_id);
+  }
+}
 
 ///////////////////////////////
 //         Span              //
@@ -204,9 +213,11 @@ void Span::poll() {
       } else {
         Serial.print("YOU MAY CONFIGURE BY TYPING 'W <RETURN>'.\n\n");
         statusLED.start(LED_WIFI_NEEDED);
+        fireEventCallback(HOMESPAN_WIFI_NEEDED);
       }
     } else {
       homeSpan.statusLED.start(LED_WIFI_CONNECTING);
+      fireEventCallback(HOMESPAN_WIFI_CONNECTING);
     }
           
     controlButton.reset();        
@@ -214,6 +225,7 @@ void Span::poll() {
     Serial.print(displayName);
     Serial.print(" is READY!\n\n");
     isInitialized=true;
+    fireEventCallback(HOMESPAN_READY);
     
   } // isInitialized
 
@@ -299,6 +311,7 @@ void Span::poll() {
 
   if(controlButton.primed()){
     statusLED.start(LED_ALERT);
+    fireEventCallback(HOMESPAN_ALERT);
   }
   
   if(controlButton.triggered(3000,10000)){
@@ -335,6 +348,8 @@ void Span::commandMode(){
   int mode=1;
   boolean done=false;
   statusLED.start(500,0.3,mode,1000);
+  fireEventCallback(HOMESPAN_ENTER_CMD_MODE);
+  fireEventCallback(HOMESPAN_CMD_SELECT_NONE);
 
   unsigned long alarmTime=millis()+comModeLife;
 
@@ -353,7 +368,8 @@ void Span::commandMode(){
         mode++;
         if(mode==6)
           mode=1;
-        statusLED.start(500,0.3,mode,1000);        
+        statusLED.start(500,0.3,mode,1000);
+        fireEventCallback(HOMESPAN_ENTER_CMD_MODE+mode);
       } else {
         done=true;
       }
@@ -367,13 +383,15 @@ void Span::commandMode(){
 
     case 1:
       Serial.print("*** NO ACTION\n\n");
-      if(strlen(network.wifiData.ssid)==0)
+      if(strlen(network.wifiData.ssid)==0) {
         statusLED.start(LED_WIFI_NEEDED);
-      else
-      if(!HAPClient::nAdminControllers())
+        fireEventCallback(HOMESPAN_WIFI_NEEDED);
+      } else if(!HAPClient::nAdminControllers()) {
         statusLED.start(LED_PAIRING_NEEDED);
-      else
+        fireEventCallback(HOMESPAN_PAIRING_NEEDED);
+      } else {
         statusLED.on();
+      }
     break;
 
     case 2:
@@ -395,6 +413,7 @@ void Span::commandMode(){
   } // switch
   
   Serial.print("*** EXITING COMMAND MODE ***\n\n");
+  fireEventCallback(HOMESPAN_EXIT_CMD_MODE);
 }
 
 //////////////////////////////////////
@@ -410,6 +429,7 @@ void Span::checkConnect(){
     waitTime=60000;
     alarmConnect=0;
     homeSpan.statusLED.start(LED_WIFI_CONNECTING);
+    fireEventCallback(HOMESPAN_WIFI_CONNECTING);
   }
 
   if(WiFi.status()!=WL_CONNECTED){
@@ -571,13 +591,15 @@ void Span::checkConnect(){
   if(!HAPClient::nAdminControllers()){
     Serial.print("DEVICE NOT YET PAIRED -- PLEASE PAIR WITH HOMEKIT APP\n\n");
     statusLED.start(LED_PAIRING_NEEDED);
+    fireEventCallback(HOMESPAN_PAIRING_NEEDED);
   } else {
     statusLED.on();
   }
   
-  if(wifiCallback)
+  if(wifiCallback) {
     wifiCallback();
-  
+  }
+ fireEventCallback(HOMESPAN_WIFI_CONNECTED);
 } // initWiFi
 
 ///////////////////////////////
@@ -769,10 +791,13 @@ void Span::processSerialCommand(const char *c){
       Serial.print("\nDEVICE NOT YET PAIRED -- PLEASE PAIR WITH HOMEKIT APP\n\n");
       mdns_service_txt_item_set("_hap","_tcp","sf","1");                                                        // set Status Flag = 1 (Table 6-8)
       
-      if(strlen(network.wifiData.ssid)==0)
+      if(strlen(network.wifiData.ssid)==0) {
         statusLED.start(LED_WIFI_NEEDED);
-      else
+        fireEventCallback(HOMESPAN_WIFI_NEEDED);
+      } else {
         statusLED.start(LED_PAIRING_NEEDED);
+        fireEventCallback(HOMESPAN_PAIRING_NEEDED);
+      }
     }
     break;
 
@@ -1393,6 +1418,30 @@ void Span::checkRanges(){
   homeSpan.configLog+="\n\n";
 }
 
+void Span::addEventCallback(void (*f)(int e)) {
+    if(eventLoopHandle == NULL) {
+      esp_event_loop_args_t loopArgs = {
+            .queue_size = 5,
+            .task_name = "HomeSpanEventLoop",
+            .task_priority = uxTaskPriorityGet(NULL),
+            .task_stack_size = 2048,
+            .task_core_id = xPortGetCoreID()
+    };
+
+    esp_event_loop_create(&loopArgs, &eventLoopHandle);
+  }
+
+  esp_event_handler_register_with(eventLoopHandle, HOMESPAN_EVENT_BASE, ESP_EVENT_ANY_ID, eventHandler, this);
+
+  eventCallback=f;
+}
+
+void Span::fireEventCallback(int e) {
+  if(eventLoopHandle != NULL) {
+    esp_event_post_to(eventLoopHandle, HOMESPAN_EVENT_BASE, e, NULL, 0, portMAX_DELAY);
+  }
+}
+
 ///////////////////////////////
 //      SpanAccessory        //
 ///////////////////////////////
@@ -1993,6 +2042,7 @@ void SpanOTA::start(){
       esp_ota_get_running_partition()->label,esp_ota_get_next_update_partition(NULL)->label);
   otaPercent=0;
   homeSpan.statusLED.start(LED_OTA_STARTED);
+  homeSpan.fireEventCallback(HOMESPAN_OTA_STARTED);
 }
 
 ///////////////////////////////
